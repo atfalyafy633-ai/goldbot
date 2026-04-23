@@ -1,4 +1,3 @@
-
 import requests
 import json
 import time
@@ -14,16 +13,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 DISCLAIMER = "\n\n⚠️ <i>التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً</i>"
 
 trade = {
-    "active": False,
-    "trend": None,
-    "entry": None,
-    "sl": None,
-    "tp1": None,
-    "tp2": None,
-    "tp3": None,
-    "tp1_hit": False,
-    "tp2_hit": False,
-    "entry_hit": False,
+    "active": False, "trend": None, "entry": None,
+    "sl": None, "tp1": None, "tp2": None, "tp3": None,
+    "tp1_hit": False, "tp2_hit": False, "entry_hit": False,
     "pivot": None,
 }
 
@@ -39,7 +31,6 @@ def reset_trade():
 
 
 def get_prices(interval="60m", count=50):
-    """سحب الأسعار من Yahoo Finance"""
     try:
         ranges = {"60m": "5d", "15m": "1d", "3m": "1d"}
         rng = ranges.get(interval, "1d")
@@ -47,8 +38,14 @@ def get_prices(interval="60m", count=50):
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(url, headers=headers, timeout=15)
         data = r.json()
-        closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+        result_data = data["chart"]["result"]
+        if not result_data:
+            logging.error(f"[{interval}] لا توجد بيانات")
+            return None
+        closes = result_data[0]["indicators"]["quote"][0]["close"]
         prices = [round(p, 2) for p in closes if p is not None]
+        if len(prices) < 5:
+            return None
         result = prices[-count:] if len(prices) >= count else prices
         logging.info(f"[{interval}] سحب {len(result)} سعر — آخرها: {result[-1]}")
         return result
@@ -58,7 +55,6 @@ def get_prices(interval="60m", count=50):
 
 
 def analyze_with_claude(h1_prices, m15_prices, current_price):
-    """Claude يحلل بناءً على H1 للاتجاه و M15 للمستويات"""
     system = """أنت نظام تداول رقمي متخصص في الذهب XAUUSD تطبق فقط منهج استراتيجية التوازن المفقود.
 
 لديك فريمين:
@@ -70,7 +66,7 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
 2. من H1: اختر الـ Pivot — آخر قمة واضحة في الهابط، أو آخر قاع واضح في الصاعد
 3. Core Code: أول 4 أرقام من سعر الـ Pivot بدون فاصلة، اجمعها حتى رقم واحد 1-9
 4. العائلة: 1او4او7=12 | 2او5او8=15 | 3او6او9=18
-5. Step = قيمة العائلة مباشرة (الذهب 4 خانات)
+5. Step = قيمة العائلة مباشرة
 6. ابنِ 4 مستويات من الـ Pivot صعوداً أو هبوطاً
 7. Entry=L1، SL=Pivot، TP1=L2، TP2=L3، TP3=L4
 
@@ -166,7 +162,6 @@ def check_trade(current_price):
 
     trend = trade["trend"]
 
-    # تحقق الدخول
     if not trade["entry_hit"]:
         if (trend == "هابط" and current_price <= trade["entry"]) or \
            (trend == "صاعد" and current_price >= trade["entry"]):
@@ -180,7 +175,6 @@ def check_trade(current_price):
 ✅ الهدف الأول: <b>{trade['tp1']}</b>{DISCLAIMER}""")
         return
 
-    # تحقق SL
     if (trend == "هابط" and current_price >= trade["sl"]) or \
        (trend == "صاعد" and current_price <= trade["sl"]):
         send_telegram(f"""🛑 <b>ضُرب وقف الخسارة</b>
@@ -190,7 +184,6 @@ def check_trade(current_price):
         reset_trade()
         return
 
-    # تحقق TP1
     if not trade["tp1_hit"]:
         if (trend == "هابط" and current_price <= trade["tp1"]) or \
            (trend == "صاعد" and current_price >= trade["tp1"]):
@@ -202,7 +195,6 @@ def check_trade(current_price):
 ⏳ انتظار TP2: {trade['tp2']}{DISCLAIMER}""")
         return
 
-    # تحقق TP2
     if not trade["tp2_hit"]:
         if (trend == "هابط" and current_price <= trade["tp2"]) or \
            (trend == "صاعد" and current_price >= trade["tp2"]):
@@ -214,7 +206,6 @@ def check_trade(current_price):
 ⏳ انتظار TP3: {trade['tp3']}{DISCLAIMER}""")
         return
 
-    # تحقق TP3
     if (trend == "هابط" and current_price <= trade["tp3"]) or \
        (trend == "صاعد" and current_price >= trade["tp3"]):
         send_telegram(f"""🎯 <b>تحققت الصفقة كاملة</b>
@@ -234,7 +225,6 @@ def run():
 
     while True:
         try:
-            # سحب أسعار M3 للمراقبة اللحظية
             m3_prices = get_prices("3m", 10)
             if not m3_prices:
                 time.sleep(60)
@@ -242,11 +232,9 @@ def run():
 
             current_price = m3_prices[-1]
 
-            # تحقق من الصفقة الحالية كل دقيقة
             if trade["active"]:
                 check_trade(current_price)
 
-            # تحليل جديد كل 15 دقيقة
             analysis_counter += 1
             if analysis_counter >= 15:
                 analysis_counter = 0
@@ -260,7 +248,6 @@ def run():
                     if result:
                         new_trend = result["trend"]
 
-                        # تغير الاتجاه
                         if trade["active"] and new_trend != trade["trend"]:
                             send_telegram(f"""🔄 <b>تغيّر الاتجاه</b>
 الاتجاه الجديد: {new_trend}
@@ -269,7 +256,6 @@ def run():
 🔍 <b>تحليل جديد...</b>{DISCLAIMER}""")
                             reset_trade()
 
-                        # صفقة جديدة
                         if not trade["active"]:
                             trade["active"] = True
                             trade["trend"] = result["trend"]
