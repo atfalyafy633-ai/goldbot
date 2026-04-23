@@ -2,15 +2,20 @@ import requests
 import json
 import time
 import logging
+import threading
 from datetime import datetime
 
 ANTHROPIC_API_KEY = "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"
 TELEGRAM_TOKEN   = "8623822921:AAGRn6fNVa3PRkxirDnqnPFgeQAt42S_B5M"
-TELEGRAM_CHAT_ID = "7278951055"
+ADMIN_CHAT_ID    = "7278951055"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 DISCLAIMER = "\n\n⚠️ <i>التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً</i>"
+
+# قائمة المشتركين
+subscribers = set()
+subscribers.add(ADMIN_CHAT_ID)
 
 trade = {
     "active": False, "trend": None, "entry": None,
@@ -32,7 +37,7 @@ def reset_trade():
 
 def get_prices(interval="60m", count=50):
     try:
-        ranges = {"60m": "5d", "15m": "1d", "3m": "1d"}
+        ranges = {"60m": "5d", "15m": "1d", "3m": "1d", "5m": "1d"}
         rng = ranges.get(interval, "1d")
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval={interval}&range={rng}"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -40,14 +45,13 @@ def get_prices(interval="60m", count=50):
         data = r.json()
         result_data = data["chart"]["result"]
         if not result_data:
-            logging.error(f"[{interval}] لا توجد بيانات")
             return None
         closes = result_data[0]["indicators"]["quote"][0]["close"]
         prices = [round(p, 2) for p in closes if p is not None]
         if len(prices) < 5:
             return None
         result = prices[-count:] if len(prices) >= count else prices
-        logging.info(f"[{interval}] سحب {len(result)} سعر — آخرها: {result[-1]}")
+        logging.info(f"[{interval}] {len(result)} سعر — آخرها: {result[-1]}")
         return result
     except Exception as e:
         logging.error(f"خطأ سحب [{interval}]: {e}")
@@ -61,34 +65,20 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
 - H1: لتحديد الاتجاه العام والـ Pivot الرئيسي
 - M15: لرسم المستويات الرقمية
 
-الخطوات الإلزامية:
-1. من H1: حدد الاتجاه العام (صاعد/هابط) بوضوح من بنية السوق
-2. من H1: اختر الـ Pivot — آخر قمة واضحة في الهابط، أو آخر قاع واضح في الصاعد
-3. Core Code: أول 4 أرقام من سعر الـ Pivot بدون فاصلة، اجمعها حتى رقم واحد 1-9
+الخطوات:
+1. من H1: حدد الاتجاه العام (صاعد/هابط)
+2. من H1: اختر الـ Pivot — آخر قمة في الهابط، آخر قاع في الصاعد
+3. Core Code: أول 4 أرقام من Pivot بدون فاصلة، اجمعها حتى رقم 1-9
 4. العائلة: 1او4او7=12 | 2او5او8=15 | 3او6او9=18
-5. Step = قيمة العائلة مباشرة
-6. ابنِ 4 مستويات من الـ Pivot صعوداً أو هبوطاً
+5. Step = قيمة العائلة
+6. 4 مستويات صعوداً أو هبوطاً
 7. Entry=L1، SL=Pivot، TP1=L2، TP2=L3، TP3=L4
+8. هابط=بيع، صاعد=شراء
 
-قاعدة مهمة: الصفقات مع الاتجاه فقط — هابط=بيع، صاعد=شراء
-
-أجب فقط بـ JSON بدون أي نص إضافي:
+أجب فقط بـ JSON:
 {"trend":"هابط","pivot_type":"Peak","pivot_price":0,"core_code":0,"family":0,"step":0,"level1":0,"level2":0,"level3":0,"level4":0,"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0,"note":""}"""
 
-    h1_str = "\n".join([str(p) for p in h1_prices])
-    m15_str = "\n".join([str(p) for p in m15_prices])
-
-    user_msg = f"""بيانات الذهب XAUUSD:
-
-[H1 - لتحديد الاتجاه والـ Pivot]:
-{h1_str}
-
-[M15 - للمستويات]:
-{m15_str}
-
-السعر الحالي: {current_price}
-
-حلل وأعطني JSON فقط."""
+    user_msg = f"""[H1]:\n{chr(10).join([str(p) for p in h1_prices])}\n\n[M15]:\n{chr(10).join([str(p) for p in m15_prices])}\n\nالسعر الحالي: {current_price}\n\nJSON فقط."""
 
     try:
         r = requests.post(
@@ -119,15 +109,29 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
         return None
 
 
-def send_telegram(msg):
+def send_to_all(msg):
+    """إرسال لكل المشتركين"""
+    for chat_id in list(subscribers):
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                timeout=15
+            )
+        except Exception as e:
+            logging.error(f"خطأ إرسال {chat_id}: {e}")
+
+
+def send_to_one(chat_id, msg):
+    """إرسال لشخص واحد"""
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
             timeout=15
         )
     except Exception as e:
-        logging.error(f"خطأ تيليجرام: {e}")
+        logging.error(f"خطأ إرسال {chat_id}: {e}")
 
 
 def send_new_trade(p, current_price):
@@ -152,14 +156,13 @@ L3: {p['level3']} | L4: {p['level4']}
 
 ⏳ <b>الحالة:</b> انتظار Break + Retest
 💰 <b>السعر الحالي:</b> {current_price}{DISCLAIMER}"""
-    send_telegram(msg)
+    send_to_all(msg)
 
 
 def check_trade(current_price):
     global trade
     if not trade["active"]:
         return
-
     trend = trade["trend"]
 
     if not trade["entry_hit"]:
@@ -167,7 +170,7 @@ def check_trade(current_price):
            (trend == "صاعد" and current_price >= trade["entry"]):
             trade["entry_hit"] = True
             direction = "🔴 بيع" if trend == "هابط" else "🟢 شراء"
-            send_telegram(f"""🚨 <b>تفعّلت الصفقة</b>
+            send_to_all(f"""🚨 <b>تفعّلت الصفقة</b>
 {direction} — دخول عند <b>{trade['entry']}</b>
 💰 السعر الحالي: {current_price}
 
@@ -177,7 +180,7 @@ def check_trade(current_price):
 
     if (trend == "هابط" and current_price >= trade["sl"]) or \
        (trend == "صاعد" and current_price <= trade["sl"]):
-        send_telegram(f"""🛑 <b>ضُرب وقف الخسارة</b>
+        send_to_all(f"""🛑 <b>ضُرب وقف الخسارة</b>
 💰 السعر: {current_price}
 
 🔍 <b>جاري البحث عن صفقة جديدة...</b>{DISCLAIMER}""")
@@ -188,7 +191,7 @@ def check_trade(current_price):
         if (trend == "هابط" and current_price <= trade["tp1"]) or \
            (trend == "صاعد" and current_price >= trade["tp1"]):
             trade["tp1_hit"] = True
-            send_telegram(f"""✅ <b>تحقق TP1</b>
+            send_to_all(f"""✅ <b>تحقق TP1</b>
 💰 السعر: {current_price}
 
 📌 <b>انقل وقف الخسارة لنقطة الدخول: {trade['entry']}</b>
@@ -199,7 +202,7 @@ def check_trade(current_price):
         if (trend == "هابط" and current_price <= trade["tp2"]) or \
            (trend == "صاعد" and current_price >= trade["tp2"]):
             trade["tp2_hit"] = True
-            send_telegram(f"""✅✅ <b>تحقق TP2</b>
+            send_to_all(f"""✅✅ <b>تحقق TP2</b>
 💰 السعر: {current_price}
 
 📌 <b>انقل وقف الخسارة لـ TP1: {trade['tp1']}</b>
@@ -208,7 +211,7 @@ def check_trade(current_price):
 
     if (trend == "هابط" and current_price <= trade["tp3"]) or \
        (trend == "صاعد" and current_price >= trade["tp3"]):
-        send_telegram(f"""🎯 <b>تحققت الصفقة كاملة</b>
+        send_to_all(f"""🎯 <b>تحققت الصفقة كاملة</b>
 💰 السعر: {current_price}
 
 🏆 <b>الصفقة ناجحة بالكامل</b>
@@ -216,21 +219,73 @@ def check_trade(current_price):
         reset_trade()
 
 
+def handle_updates():
+    """استقبال رسائل المشتركين"""
+    offset = 0
+    while True:
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 30},
+                timeout=35
+            )
+            updates = r.json().get("result", [])
+            for update in updates:
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+                text = msg.get("text", "")
+                first_name = msg.get("chat", {}).get("first_name", "")
+
+                if text == "/start":
+                    if chat_id not in subscribers:
+                        subscribers.add(chat_id)
+                        logging.info(f"مشترك جديد: {chat_id} ({first_name})")
+                        send_to_one(chat_id, f"""🥇 <b>أهلاً {first_name}!</b>
+
+تم تسجيلك في بوت تحليل الذهب XAUUSD 🎉
+
+ستصلك تحليلات الذهب تلقائياً بمجرد توفر فرصة تداول.
+
+⚠️ <i>التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً</i>""")
+                        send_to_one(ADMIN_CHAT_ID, f"👤 مشترك جديد: {first_name} | إجمالي: {len(subscribers)}")
+                    else:
+                        send_to_one(chat_id, "✅ أنت مشترك بالفعل — ستصلك التحليلات تلقائياً.")
+
+                elif text == "/stop":
+                    if chat_id in subscribers and chat_id != ADMIN_CHAT_ID:
+                        subscribers.discard(chat_id)
+                        send_to_one(chat_id, "تم إلغاء اشتراكك. يمكنك العودة بـ /start")
+                        logging.info(f"إلغاء اشتراك: {chat_id}")
+
+                elif text == "/count" and chat_id == ADMIN_CHAT_ID:
+                    send_to_one(ADMIN_CHAT_ID, f"👥 عدد المشتركين: {len(subscribers)}")
+
+        except Exception as e:
+            logging.error(f"خطأ updates: {e}")
+        time.sleep(2)
+
+
 def run():
     global trade
     logging.info("البوت بدأ")
-    send_telegram("🤖 <b>بوت الذهب شغّال</b> — يراقب XAUUSD\nالفريم: H1 للاتجاه | M15 للمستويات | M3 للدخول")
+
+    # تشغيل استقبال الرسائل في thread منفصل
+    t = threading.Thread(target=handle_updates, daemon=True)
+    t.start()
+
+    send_to_all("🤖 <b>بوت الذهب شغّال</b> — يراقب XAUUSD\nالفريم: H1 للاتجاه | M15 للمستويات")
 
     analysis_counter = 0
 
     while True:
         try:
-            m3_prices = get_prices("3m", 10)
-            if not m3_prices:
+            m5_prices = get_prices("5m", 10)
+            if not m5_prices:
                 time.sleep(60)
                 continue
 
-            current_price = m3_prices[-1]
+            current_price = m5_prices[-1]
 
             if trade["active"]:
                 check_trade(current_price)
@@ -246,11 +301,9 @@ def run():
                     result = analyze_with_claude(h1_prices, m15_prices, current_price)
 
                     if result:
-                        new_trend = result["trend"]
-
-                        if trade["active"] and new_trend != trade["trend"]:
-                            send_telegram(f"""🔄 <b>تغيّر الاتجاه</b>
-الاتجاه الجديد: {new_trend}
+                        if trade["active"] and result["trend"] != trade["trend"]:
+                            send_to_all(f"""🔄 <b>تغيّر الاتجاه</b>
+الاتجاه الجديد: {result['trend']}
 
 ❌ <b>الصفقة القديمة ملغاة</b>
 🔍 <b>تحليل جديد...</b>{DISCLAIMER}""")
