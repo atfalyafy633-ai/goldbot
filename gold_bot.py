@@ -13,9 +13,7 @@ ADMIN_CHAT_ID     = "7278951055"
 SUBSCRIBERS_FILE  = "/data/subscribers.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-
 DISCLAIMER = "\n\n⚠️ <i>التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً</i>"
-
 
 # ======= المشتركين =======
 def load_subscribers():
@@ -30,7 +28,6 @@ def load_subscribers():
         pass
     return {ADMIN_CHAT_ID}
 
-
 def save_subscribers(subs):
     try:
         os.makedirs("/data", exist_ok=True)
@@ -39,44 +36,47 @@ def save_subscribers(subs):
     except Exception as e:
         logging.error(f"خطأ حفظ المشتركين: {e}")
 
-
 subscribers = load_subscribers()
 
-
 # ======= الصفقة =======
-trade = {
-    "active": False, "trend": None, "entry": None,
-    "sl": None, "tp1": None, "tp2": None, "tp3": None,
-    "tp1_hit": False, "tp2_hit": False, "entry_hit": False,
-    "pivot": None, "last_pivot": None
-}
+# مراحل الدخول:
+# "waiting"  = انتظار الكسر
+# "broken"   = تم الكسر، انتظار الـ Retest
+# "retest"   = تم الـ Retest، انتظار التأكيد
+# "active"   = دخلنا الصفقة
 
+trade = {
+    "phase": "waiting",   # waiting / broken / retest / active
+    "trend": None,
+    "entry": None,
+    "sl": None,
+    "tp1": None, "tp2": None, "tp3": None,
+    "tp1_hit": False, "tp2_hit": False,
+    "pivot": None, "last_pivot": None,
+    "break_price": None,   # أعلى/أدنى سعر بعد الكسر
+}
 
 def reset_trade():
     global trade
     last_pivot = trade.get("pivot")
     trade = {
-        "active": False, "trend": None, "entry": None,
+        "phase": "waiting",
+        "trend": None, "entry": None,
         "sl": None, "tp1": None, "tp2": None, "tp3": None,
-        "tp1_hit": False, "tp2_hit": False, "entry_hit": False,
-        "pivot": None, "last_pivot": last_pivot
+        "tp1_hit": False, "tp2_hit": False,
+        "pivot": None, "last_pivot": last_pivot,
+        "break_price": None,
     }
 
-
-# ======= الأسعار من Twelve Data =======
+# ======= الأسعار =======
 def get_prices(interval="1h", count=50):
     try:
         url = "https://api.twelvedata.com/time_series"
-        params = {
-            "symbol": "XAU/USD",
-            "interval": interval,
-            "outputsize": count,
-            "apikey": TWELVE_API_KEY
-        }
+        params = {"symbol": "XAU/USD", "interval": interval, "outputsize": count, "apikey": TWELVE_API_KEY}
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
         if data.get("status") == "error":
-            logging.error(f"Twelve Data error: {data.get('message')}")
+            logging.error(f"Twelve error: {data.get('message')}")
             return None
         values = data.get("values", [])
         if not values:
@@ -88,7 +88,6 @@ def get_prices(interval="1h", count=50):
         logging.error(f"خطأ سحب [{interval}]: {e}")
         return None
 
-
 def get_current_price():
     try:
         url = "https://api.twelvedata.com/price"
@@ -99,9 +98,8 @@ def get_current_price():
         logging.info(f"السعر الحالي: {price}")
         return price
     except Exception as e:
-        logging.error(f"خطأ سحب السعر الحالي: {e}")
+        logging.error(f"خطأ سحب السعر: {e}")
         return None
-
 
 # ======= التحليل =======
 def analyze_with_claude(h1_prices, m15_prices, current_price):
@@ -131,17 +129,8 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
     try:
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 600,
-                "system": system,
-                "messages": [{"role": "user", "content": user_msg}]
-            },
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 600, "system": system, "messages": [{"role": "user", "content": user_msg}]},
             timeout=45
         )
         if r.status_code != 200:
@@ -156,7 +145,6 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
         logging.error(f"خطأ تحليل: {e}")
         return None
 
-
 # ======= الإرسال =======
 def send_to_all(msg):
     for chat_id in list(subscribers):
@@ -169,7 +157,6 @@ def send_to_all(msg):
         except Exception as e:
             logging.error(f"خطأ إرسال {chat_id}: {e}")
 
-
 def send_to_one(chat_id, msg):
     try:
         requests.post(
@@ -178,8 +165,7 @@ def send_to_one(chat_id, msg):
             timeout=15
         )
     except Exception as e:
-        logging.error(f"خطأ إرسال {chat_id}: {e}")
-
+        logging.error(f"خطأ إرسال: {e}")
 
 def send_new_trade(p, current_price):
     direction = "🔴 بيع" if p["trend"] == "هابط" else "🟢 شراء"
@@ -205,67 +191,148 @@ L3: {p['level3']} | L4: {p['level4']}
 💰 <b>السعر الحالي:</b> {current_price}{DISCLAIMER}"""
     send_to_all(msg)
 
-
-# ======= متابعة الصفقة =======
+# ======= متابعة الصفقة - Break + Retest الصحيح =======
 def check_trade(current_price):
     global trade
-    if not trade["active"]:
+    if trade["phase"] == "waiting":
         return
-    trend = trade["trend"]
 
-    if not trade["entry_hit"]:
-        if (trend == "هابط" and current_price <= trade["entry"]) or \
-           (trend == "صاعد" and current_price >= trade["entry"]):
-            trade["entry_hit"] = True
-            direction = "🔴 بيع" if trend == "هابط" else "🟢 شراء"
-            send_to_all(f"""🚨 <b>تفعّلت الصفقة</b>
-{direction} — دخول عند <b>{trade['entry']}</b>
+    trend   = trade["trend"]
+    entry   = trade["entry"]
+    retest_tolerance = 3  # نقاط تسامح للـ Retest
+
+    # ===== مرحلة: انتظار الكسر =====
+    if trade["phase"] == "broken":
+        if trend == "هابط":
+            # بعد الكسر للأسفل، نتابع أعلى سعر (للـ Retest)
+            if trade["break_price"] is None or current_price > trade["break_price"]:
+                trade["break_price"] = current_price
+
+            # الـ Retest: السعر ارتد للأعلى ووصل قرب مستوى الدخول
+            if current_price >= entry - retest_tolerance:
+                trade["phase"] = "retest"
+                logging.info(f"Retest تم عند {current_price}")
+                send_to_all(f"""🔄 <b>Retest عند مستوى الدخول</b>
+💰 السعر: {current_price}
+📍 مستوى الدخول: {entry}
+
+⏳ <b>انتظار تأكيد الاستمرار للأسفل...</b>{DISCLAIMER}""")
+
+        else:  # صاعد
+            # بعد الكسر للأعلى، نتابع أدنى سعر (للـ Retest)
+            if trade["break_price"] is None or current_price < trade["break_price"]:
+                trade["break_price"] = current_price
+
+            # الـ Retest: السعر نزل ووصل قرب مستوى الدخول
+            if current_price <= entry + retest_tolerance:
+                trade["phase"] = "retest"
+                logging.info(f"Retest تم عند {current_price}")
+                send_to_all(f"""🔄 <b>Retest عند مستوى الدخول</b>
+💰 السعر: {current_price}
+📍 مستوى الدخول: {entry}
+
+⏳ <b>انتظار تأكيد الاستمرار للأعلى...</b>{DISCLAIMER}""")
+        return
+
+    # ===== مرحلة: تأكيد بعد الـ Retest =====
+    if trade["phase"] == "retest":
+        if trend == "هابط":
+            # تأكيد: السعر عاد للنزول تحت الدخول
+            if current_price < entry - retest_tolerance:
+                trade["phase"] = "active"
+                send_to_all(f"""🚨 <b>تفعّلت الصفقة</b>
+🔴 بيع — دخول عند <b>{entry}</b>
 💰 السعر الحالي: {current_price}
 
 🛑 وقف الخسارة: <b>{trade['sl']}</b>
 ✅ الهدف الأول: <b>{trade['tp1']}</b>{DISCLAIMER}""")
-        return
-
-    if (trend == "هابط" and current_price >= trade["sl"]) or \
-       (trend == "صاعد" and current_price <= trade["sl"]):
-        send_to_all(f"""🛑 <b>ضُرب وقف الخسارة</b>
+            # إذا السعر تجاوز الـ SL — ألغِ
+            elif current_price >= trade["sl"]:
+                send_to_all(f"""❌ <b>فشل الـ Retest — الصفقة ملغاة</b>
 💰 السعر: {current_price}
-
 🔍 <b>جاري البحث عن صفقة جديدة...</b>{DISCLAIMER}""")
-        reset_trade()
+                reset_trade()
+        else:  # صاعد
+            # تأكيد: السعر عاد للصعود فوق الدخول
+            if current_price > entry + retest_tolerance:
+                trade["phase"] = "active"
+                send_to_all(f"""🚨 <b>تفعّلت الصفقة</b>
+🟢 شراء — دخول عند <b>{entry}</b>
+💰 السعر الحالي: {current_price}
+
+🛑 وقف الخسارة: <b>{trade['sl']}</b>
+✅ الهدف الأول: <b>{trade['tp1']}</b>{DISCLAIMER}""")
+            # إذا السعر تجاوز الـ SL — ألغِ
+            elif current_price <= trade["sl"]:
+                send_to_all(f"""❌ <b>فشل الـ Retest — الصفقة ملغاة</b>
+💰 السعر: {current_price}
+🔍 <b>جاري البحث عن صفقة جديدة...</b>{DISCLAIMER}""")
+                reset_trade()
         return
 
-    if not trade["tp1_hit"]:
-        if (trend == "هابط" and current_price <= trade["tp1"]) or \
-           (trend == "صاعد" and current_price >= trade["tp1"]):
-            trade["tp1_hit"] = True
-            send_to_all(f"""✅ <b>تحقق TP1</b>
+    # ===== مرحلة: الصفقة نشطة =====
+    if trade["phase"] == "active":
+        # تحقق SL
+        if (trend == "هابط" and current_price >= trade["sl"]) or \
+           (trend == "صاعد" and current_price <= trade["sl"]):
+            send_to_all(f"""🛑 <b>ضُرب وقف الخسارة</b>
 💰 السعر: {current_price}
+🔍 <b>جاري البحث عن صفقة جديدة...</b>{DISCLAIMER}""")
+            reset_trade()
+            return
 
+        # تحقق TP1
+        if not trade["tp1_hit"]:
+            if (trend == "هابط" and current_price <= trade["tp1"]) or \
+               (trend == "صاعد" and current_price >= trade["tp1"]):
+                trade["tp1_hit"] = True
+                send_to_all(f"""✅ <b>تحقق TP1</b>
+💰 السعر: {current_price}
 📌 <b>انقل وقف الخسارة لنقطة الدخول: {trade['entry']}</b>
 ⏳ انتظار TP2: {trade['tp2']}{DISCLAIMER}""")
-        return
+            return
 
-    if not trade["tp2_hit"]:
-        if (trend == "هابط" and current_price <= trade["tp2"]) or \
-           (trend == "صاعد" and current_price >= trade["tp2"]):
-            trade["tp2_hit"] = True
-            send_to_all(f"""✅✅ <b>تحقق TP2</b>
+        # تحقق TP2
+        if not trade["tp2_hit"]:
+            if (trend == "هابط" and current_price <= trade["tp2"]) or \
+               (trend == "صاعد" and current_price >= trade["tp2"]):
+                trade["tp2_hit"] = True
+                send_to_all(f"""✅✅ <b>تحقق TP2</b>
 💰 السعر: {current_price}
-
 📌 <b>انقل وقف الخسارة لـ TP1: {trade['tp1']}</b>
 ⏳ انتظار TP3: {trade['tp3']}{DISCLAIMER}""")
-        return
+            return
 
-    if (trend == "هابط" and current_price <= trade["tp3"]) or \
-       (trend == "صاعد" and current_price >= trade["tp3"]):
-        send_to_all(f"""🎯 <b>تحققت الصفقة كاملة</b>
+        # تحقق TP3
+        if (trend == "هابط" and current_price <= trade["tp3"]) or \
+           (trend == "صاعد" and current_price >= trade["tp3"]):
+            send_to_all(f"""🎯 <b>تحققت الصفقة كاملة</b>
 💰 السعر: {current_price}
-
 🏆 <b>الصفقة ناجحة بالكامل</b>
 🔍 <b>جاري البحث عن صفقة جديدة...</b>{DISCLAIMER}""")
-        reset_trade()
+            reset_trade()
 
+# ======= انتظار الكسر =======
+def check_break(current_price):
+    global trade
+    if trade["phase"] != "waiting":
+        return
+
+    trend = trade["trend"]
+    entry = trade["entry"]
+
+    if trend == "هابط":
+        # الكسر: السعر نزل تحت مستوى الدخول
+        if current_price < entry:
+            trade["phase"] = "broken"
+            trade["break_price"] = current_price
+            logging.info(f"كسر للأسفل عند {current_price} | Entry: {entry}")
+    else:  # صاعد
+        # الكسر: السعر طلع فوق مستوى الدخول
+        if current_price > entry:
+            trade["phase"] = "broken"
+            trade["break_price"] = current_price
+            logging.info(f"كسر للأعلى عند {current_price} | Entry: {entry}")
 
 # ======= استقبال المشتركين =======
 def handle_updates():
@@ -313,7 +380,6 @@ def handle_updates():
             logging.error(f"خطأ updates: {e}")
         time.sleep(2)
 
-
 # ======= التشغيل الرئيسي =======
 def run():
     global trade
@@ -333,50 +399,53 @@ def run():
                 time.sleep(60)
                 continue
 
-            if trade["active"]:
+            # تحقق الكسر أو متابعة الصفقة
+            if trade["phase"] == "waiting" and trade["trend"]:
+                check_break(current_price)
+            elif trade["phase"] in ["broken", "retest", "active"]:
                 check_trade(current_price)
 
+            # تحليل جديد كل 15 دقيقة
             analysis_counter += 1
             if analysis_counter >= 15:
                 analysis_counter = 0
 
-                h1_prices = get_prices("1h", 50)
+                h1_prices  = get_prices("1h", 50)
                 m15_prices = get_prices("15min", 30)
 
                 if h1_prices and m15_prices:
                     result = analyze_with_claude(h1_prices, m15_prices, current_price)
 
                     if result:
-                        new_pivot = result["pivot_price"]
+                        new_pivot  = result["pivot_price"]
                         last_pivot = trade.get("last_pivot")
 
-                        if trade["active"] and result["trend"] != trade["trend"]:
+                        # تغير الاتجاه
+                        if trade["phase"] != "waiting" and result["trend"] != trade["trend"]:
                             send_to_all(f"""🔄 <b>تغيّر الاتجاه</b>
 الاتجاه الجديد: {result['trend']}
-
 ❌ <b>الصفقة القديمة ملغاة</b>
 🔍 <b>تحليل جديد...</b>{DISCLAIMER}""")
                             reset_trade()
 
-                        if not trade["active"] and new_pivot != last_pivot:
-                            trade["active"] = True
-                            trade["trend"] = result["trend"]
-                            trade["entry"] = result["entry"]
-                            trade["sl"] = result["sl"]
-                            trade["tp1"] = result["tp1"]
-                            trade["tp2"] = result["tp2"]
-                            trade["tp3"] = result["tp3"]
-                            trade["pivot"] = new_pivot
+                        # صفقة جديدة فقط إذا Pivot مختلف
+                        if trade["phase"] == "waiting" and new_pivot != last_pivot:
+                            trade["trend"]      = result["trend"]
+                            trade["entry"]      = result["entry"]
+                            trade["sl"]         = result["sl"]
+                            trade["tp1"]        = result["tp1"]
+                            trade["tp2"]        = result["tp2"]
+                            trade["tp3"]        = result["tp3"]
+                            trade["pivot"]      = new_pivot
                             trade["last_pivot"] = new_pivot
                             send_new_trade(result, current_price)
-                        elif not trade["active"]:
-                            logging.info(f"نفس الـ Pivot ({new_pivot}) — انتظار pivot جديد")
+                        elif trade["phase"] == "waiting" and new_pivot == last_pivot:
+                            logging.info(f"نفس الـ Pivot ({new_pivot}) — انتظار")
 
         except Exception as e:
             logging.error(f"خطأ عام: {e}")
 
         time.sleep(60)
-
 
 if __name__ == "__main__":
     run()
