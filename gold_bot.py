@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 import time
@@ -5,7 +6,7 @@ import logging
 import threading
 from datetime import datetime
 
-ANTHROPIC_API_KEY = "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"
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 TELEGRAM_TOKEN   = "8623822921:AAGRn6fNVa3PRkxirDnqnPFgeQAt42S_B5M"
 ADMIN_CHAT_ID    = "7278951055"
 
@@ -13,7 +14,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 DISCLAIMER = "\n\n⚠️ <i>التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً</i>"
 
-# قائمة المشتركين
 subscribers = set()
 subscribers.add(ADMIN_CHAT_ID)
 
@@ -110,7 +110,6 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
 
 
 def send_to_all(msg):
-    """إرسال لكل المشتركين"""
     for chat_id in list(subscribers):
         try:
             requests.post(
@@ -123,7 +122,6 @@ def send_to_all(msg):
 
 
 def send_to_one(chat_id, msg):
-    """إرسال لشخص واحد"""
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -220,7 +218,6 @@ def check_trade(current_price):
 
 
 def handle_updates():
-    """استقبال رسائل المشتركين"""
     offset = 0
     while True:
         try:
@@ -256,7 +253,6 @@ def handle_updates():
                     if chat_id in subscribers and chat_id != ADMIN_CHAT_ID:
                         subscribers.discard(chat_id)
                         send_to_one(chat_id, "تم إلغاء اشتراكك. يمكنك العودة بـ /start")
-                        logging.info(f"إلغاء اشتراك: {chat_id}")
 
                 elif text == "/count" and chat_id == ADMIN_CHAT_ID:
                     send_to_one(ADMIN_CHAT_ID, f"👥 عدد المشتركين: {len(subscribers)}")
@@ -270,7 +266,6 @@ def run():
     global trade
     logging.info("البوت بدأ")
 
-    # تشغيل استقبال الرسائل في thread منفصل
     t = threading.Thread(target=handle_updates, daemon=True)
     t.start()
 
