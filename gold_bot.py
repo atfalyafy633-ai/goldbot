@@ -9,35 +9,64 @@ from datetime import datetime
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 TELEGRAM_TOKEN   = "8623822921:AAGRn6fNVa3PRkxirDnqnPFgeQAt42S_B5M"
 ADMIN_CHAT_ID    = "7278951055"
+SUBSCRIBERS_FILE = "/data/subscribers.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 DISCLAIMER = "\n\n⚠️ <i>التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً</i>"
 
-subscribers = set()
-subscribers.add(ADMIN_CHAT_ID)
 
+# ======= المشتركين =======
+def load_subscribers():
+    try:
+        os.makedirs("/data", exist_ok=True)
+        if os.path.exists(SUBSCRIBERS_FILE):
+            with open(SUBSCRIBERS_FILE, "r") as f:
+                data = json.load(f)
+                subs = set(data)
+                subs.add(ADMIN_CHAT_ID)
+                return subs
+    except:
+        pass
+    return {ADMIN_CHAT_ID}
+
+
+def save_subscribers(subs):
+    try:
+        os.makedirs("/data", exist_ok=True)
+        with open(SUBSCRIBERS_FILE, "w") as f:
+            json.dump(list(subs), f)
+    except Exception as e:
+        logging.error(f"خطأ حفظ المشتركين: {e}")
+
+
+subscribers = load_subscribers()
+
+
+# ======= الصفقة =======
 trade = {
     "active": False, "trend": None, "entry": None,
     "sl": None, "tp1": None, "tp2": None, "tp3": None,
     "tp1_hit": False, "tp2_hit": False, "entry_hit": False,
-    "pivot": None,
+    "pivot": None, "last_pivot": None
 }
 
 
 def reset_trade():
     global trade
+    last_pivot = trade.get("pivot")
     trade = {
         "active": False, "trend": None, "entry": None,
         "sl": None, "tp1": None, "tp2": None, "tp3": None,
         "tp1_hit": False, "tp2_hit": False, "entry_hit": False,
-        "pivot": None,
+        "pivot": None, "last_pivot": last_pivot
     }
 
 
+# ======= الأسعار =======
 def get_prices(interval="60m", count=50):
     try:
-        ranges = {"60m": "5d", "15m": "1d", "3m": "1d", "5m": "1d"}
+        ranges = {"60m": "5d", "15m": "1d", "5m": "1d"}
         rng = ranges.get(interval, "1d")
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval={interval}&range={rng}"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -58,6 +87,7 @@ def get_prices(interval="60m", count=50):
         return None
 
 
+# ======= التحليل =======
 def analyze_with_claude(h1_prices, m15_prices, current_price):
     system = """أنت نظام تداول رقمي متخصص في الذهب XAUUSD تطبق فقط منهج استراتيجية التوازن المفقود.
 
@@ -74,6 +104,8 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
 6. 4 مستويات صعوداً أو هبوطاً
 7. Entry=L1، SL=Pivot، TP1=L2، TP2=L3، TP3=L4
 8. هابط=بيع، صاعد=شراء
+
+مهم: اختر Pivot جديد ومختلف يعكس الوضع الحالي للسوق.
 
 أجب فقط بـ JSON:
 {"trend":"هابط","pivot_type":"Peak","pivot_price":0,"core_code":0,"family":0,"step":0,"level1":0,"level2":0,"level3":0,"level4":0,"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0,"note":""}"""
@@ -109,6 +141,7 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
         return None
 
 
+# ======= الإرسال =======
 def send_to_all(msg):
     for chat_id in list(subscribers):
         try:
@@ -157,6 +190,7 @@ L3: {p['level3']} | L4: {p['level4']}
     send_to_all(msg)
 
 
+# ======= متابعة الصفقة =======
 def check_trade(current_price):
     global trade
     if not trade["active"]:
@@ -217,6 +251,7 @@ def check_trade(current_price):
         reset_trade()
 
 
+# ======= استقبال المشتركين =======
 def handle_updates():
     offset = 0
     while True:
@@ -237,6 +272,7 @@ def handle_updates():
                 if text == "/start":
                     if chat_id not in subscribers:
                         subscribers.add(chat_id)
+                        save_subscribers(subscribers)
                         logging.info(f"مشترك جديد: {chat_id} ({first_name})")
                         send_to_one(chat_id, f"""🥇 <b>أهلاً {first_name}!</b>
 
@@ -252,6 +288,7 @@ def handle_updates():
                 elif text == "/stop":
                     if chat_id in subscribers and chat_id != ADMIN_CHAT_ID:
                         subscribers.discard(chat_id)
+                        save_subscribers(subscribers)
                         send_to_one(chat_id, "تم إلغاء اشتراكك. يمكنك العودة بـ /start")
 
                 elif text == "/count" and chat_id == ADMIN_CHAT_ID:
@@ -262,6 +299,7 @@ def handle_updates():
         time.sleep(2)
 
 
+# ======= التشغيل الرئيسي =======
 def run():
     global trade
     logging.info("البوت بدأ")
@@ -296,6 +334,10 @@ def run():
                     result = analyze_with_claude(h1_prices, m15_prices, current_price)
 
                     if result:
+                        new_pivot = result["pivot_price"]
+                        last_pivot = trade.get("last_pivot")
+
+                        # تغير الاتجاه
                         if trade["active"] and result["trend"] != trade["trend"]:
                             send_to_all(f"""🔄 <b>تغيّر الاتجاه</b>
 الاتجاه الجديد: {result['trend']}
@@ -304,7 +346,8 @@ def run():
 🔍 <b>تحليل جديد...</b>{DISCLAIMER}""")
                             reset_trade()
 
-                        if not trade["active"]:
+                        # صفقة جديدة — فقط إذا الـ Pivot مختلف
+                        if not trade["active"] and new_pivot != last_pivot:
                             trade["active"] = True
                             trade["trend"] = result["trend"]
                             trade["entry"] = result["entry"]
@@ -312,8 +355,11 @@ def run():
                             trade["tp1"] = result["tp1"]
                             trade["tp2"] = result["tp2"]
                             trade["tp3"] = result["tp3"]
-                            trade["pivot"] = result["pivot_price"]
+                            trade["pivot"] = new_pivot
+                            trade["last_pivot"] = new_pivot
                             send_new_trade(result, current_price)
+                        elif not trade["active"] and new_pivot == last_pivot:
+                            logging.info(f"نفس الـ Pivot ({new_pivot}) — انتظار pivot جديد")
 
         except Exception as e:
             logging.error(f"خطأ عام: {e}")
