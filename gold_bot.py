@@ -11,9 +11,9 @@ TWELVE_API_KEY    = os.environ.get("TWELVE_API_KEY", "")
 TELEGRAM_TOKEN    = "8623822921:AAGRn6fNVa3PRkxirDnqnPFgeQAt42S_B5M"
 ADMIN_CHAT_ID     = "7278951055"
 SUBSCRIBERS_FILE  = "/data/subscribers.json"
+TRADE_FILE        = "/data/trade_state.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-
 DISCLAIMER = "\n\n⚠️ التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً"
 
 # ======= المشتركين =======
@@ -39,21 +39,58 @@ def save_subscribers(subs):
 
 subscribers = load_subscribers()
 
-# ======= الصفقة =======
-# phase: waiting / broken / retest / active
-trade = {
-    "phase": "waiting",
-    "trend": None, "entry": None,
-    "sl": None, "tp1": None, "tp2": None, "tp3": None,
-    "tp1_hit": False, "tp2_hit": False,
-    "pivot": None, "last_pivot": None,
+# ======= حفظ وتحميل الصفقة =======
+def save_trade(t):
+    try:
+        os.makedirs("/data", exist_ok=True)
+        data = t.copy()
+        with open(TRADE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logging.error(f"خطأ حفظ الصفقة: {e}")
+
+def load_trade():
+    try:
+        if os.path.exists(TRADE_FILE):
+            with open(TRADE_FILE, "r") as f:
+                data = json.load(f)
+                logging.info(f"تم تحميل الصفقة: {data.get('phase')} | {data.get('entry')}")
+                return data
+    except Exception as e:
+        logging.error(f"خطأ تحميل الصفقة: {e}")
+    return None
+
+# ======= الصفقة الافتراضية =======
+DEFAULT_TRADE = {
+    "phase": "active",
+    "trend": "هابط",
+    "entry": 4734.76,
+    "sl": 4746.76,
+    "tp1": 4722.76,
+    "tp2": 4710.76,
+    "tp3": 4698.76,
+    "tp1_hit": True,
+    "tp2_hit": True,
+    "pivot": 4752.65,
+    "last_pivot": 4752.65,
     "break_price": None,
-    "next_zone": None,    # المنطقة القادمة
-    "next_dir": None,     # اتجاه المنطقة القادمة
-    "next_sl": None,
-    "next_tp1": None, "next_tp2": None, "next_tp3": None,
-    "next_alerted": False,  # هل أرسلنا تنبيه اقتراب
+    "next_zone": 4684.66,
+    "next_dir": "شراء",
+    "next_sl": 4672.66,
+    "next_tp1": 4696.66,
+    "next_tp2": 4708.66,
+    "next_tp3": 4720.66,
+    "next_alerted": False,
 }
+
+def init_trade():
+    saved = load_trade()
+    if saved:
+        return saved
+    logging.info("تحميل الصفقة الافتراضية")
+    return DEFAULT_TRADE.copy()
+
+trade = init_trade()
 
 def reset_trade():
     global trade
@@ -65,10 +102,10 @@ def reset_trade():
         "pivot": None, "last_pivot": trade.get("pivot"),
         "break_price": None,
         "next_zone": None, "next_dir": None,
-        "next_sl": None,
-        "next_tp1": None, "next_tp2": None, "next_tp3": None,
+        "next_sl": None, "next_tp1": None, "next_tp2": None, "next_tp3": None,
         "next_alerted": False,
     }
+    save_trade(trade)
 
 # ======= الأسعار =======
 def get_prices(interval="1h", count=50):
@@ -119,34 +156,11 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
 5. Step = قيمة العائلة
 6. ابنِ 4 مستويات — المستوى التالي بعد TP3 هو المنطقة القادمة
 7. Entry=L1، SL=Pivot، TP1=L2، TP2=L3، TP3=L4
-8. المنطقة القادمة = L4 + Step (في الهابط) أو L4 - Step (في الصاعد) — وهي منطقة الصفقة الثانية بالاتجاه المعاكس
+8. المنطقة القادمة = L4 + Step في الهابط أو L4 - Step في الصاعد
 9. هابط=بيع، صاعد=شراء
 
 أجب فقط بـ JSON:
-{
-  "trend": "هابط",
-  "pivot_type": "Peak",
-  "pivot_price": 0,
-  "core_code": 0,
-  "family": 0,
-  "step": 0,
-  "level1": 0,
-  "level2": 0,
-  "level3": 0,
-  "level4": 0,
-  "entry": 0,
-  "sl": 0,
-  "tp1": 0,
-  "tp2": 0,
-  "tp3": 0,
-  "next_zone": 0,
-  "next_dir": "شراء",
-  "next_sl": 0,
-  "next_tp1": 0,
-  "next_tp2": 0,
-  "next_tp3": 0,
-  "note": ""
-}"""
+{"trend":"هابط","pivot_type":"Peak","pivot_price":0,"core_code":0,"family":0,"step":0,"level1":0,"level2":0,"level3":0,"level4":0,"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0,"next_zone":0,"next_dir":"شراء","next_sl":0,"next_tp1":0,"next_tp2":0,"next_tp3":0,"note":""}"""
 
     user_msg = f"""[H1]:\n{chr(10).join([str(p) for p in h1_prices])}\n\n[M15]:\n{chr(10).join([str(p) for p in m15_prices])}\n\nالسعر الحالي: {current_price}\n\nJSON فقط."""
 
@@ -163,7 +177,7 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
         raw = r.json()["content"][0]["text"]
         clean = raw.replace("```json","").replace("```","").strip()
         result = json.loads(clean)
-        logging.info(f"Claude: {result['trend']} | Entry: {result['entry']} | Next: {result.get('next_zone')}")
+        logging.info(f"Claude: {result['trend']} | Entry: {result['entry']}")
         return result
     except Exception as e:
         logging.error(f"خطأ تحليل: {e}")
@@ -191,7 +205,6 @@ def send_to_one(chat_id, msg):
     except Exception as e:
         logging.error(f"خطأ إرسال: {e}")
 
-# ======= نماذج الرسائل =======
 def send_new_trade(p, current_price):
     direction = "🔴 بيع" if p["trend"] == "هابط" else "🟢 شراء"
     trend_emoji = "📉" if p["trend"] == "هابط" else "📈"
@@ -219,7 +232,6 @@ def send_new_trade(p, current_price):
 💰 <b>السعر الحالي:</b> {current_price}{next_line}{DISCLAIMER}"""
     send_to_all(msg)
 
-
 def send_activated(current_price):
     direction = "🔴 بيع" if trade["trend"] == "هابط" else "🟢 شراء"
     next_zone = trade.get("next_zone")
@@ -240,7 +252,6 @@ def send_activated(current_price):
 ✅ TP3: <b>{trade['tp3']}</b>{next_line}{DISCLAIMER}"""
     send_to_all(msg)
 
-
 # ======= متابعة الصفقة =======
 RETEST_TOLERANCE = 3
 
@@ -252,27 +263,30 @@ def check_trade(current_price):
     trend = trade["trend"]
     entry = trade["entry"]
 
-    # ===== انتظار الكسر =====
+    # انتظار الكسر
     if trade["phase"] == "broken":
         if trend == "هابط":
             if trade["break_price"] is None or current_price > trade["break_price"]:
                 trade["break_price"] = current_price
             if current_price >= entry - RETEST_TOLERANCE:
                 trade["phase"] = "retest"
+                save_trade(trade)
                 logging.info(f"Retest عند {current_price}")
         else:
             if trade["break_price"] is None or current_price < trade["break_price"]:
                 trade["break_price"] = current_price
             if current_price <= entry + RETEST_TOLERANCE:
                 trade["phase"] = "retest"
+                save_trade(trade)
                 logging.info(f"Retest عند {current_price}")
         return
 
-    # ===== تأكيد الـ Retest =====
+    # تأكيد الـ Retest
     if trade["phase"] == "retest":
         if trend == "هابط":
             if current_price < entry - RETEST_TOLERANCE:
                 trade["phase"] = "active"
+                save_trade(trade)
                 send_activated(current_price)
             elif current_price >= trade["sl"]:
                 send_to_all(f"""❌ <b>فشل الـ Retest — الصفقة ملغاة</b>
@@ -282,6 +296,7 @@ def check_trade(current_price):
         else:
             if current_price > entry + RETEST_TOLERANCE:
                 trade["phase"] = "active"
+                save_trade(trade)
                 send_activated(current_price)
             elif current_price <= trade["sl"]:
                 send_to_all(f"""❌ <b>فشل الـ Retest — الصفقة ملغاة</b>
@@ -290,16 +305,16 @@ def check_trade(current_price):
                 reset_trade()
         return
 
-    # ===== الصفقة نشطة =====
+    # الصفقة نشطة
     if trade["phase"] == "active":
 
         # تنبيه اقتراب المنطقة القادمة
         next_zone = trade.get("next_zone")
         next_dir = trade.get("next_dir")
         if next_zone and not trade["next_alerted"]:
-            distance = abs(current_price - next_zone)
-            if distance <= 5:
+            if abs(current_price - next_zone) <= 5:
                 trade["next_alerted"] = True
+                save_trade(trade)
                 next_emoji = "🟢" if next_dir == "شراء" else "🔴"
                 send_to_all(f"""👀 <b>السعر يقترب من منطقة {next_dir} {next_zone}</b>
 💰 السعر الحالي: {current_price}
@@ -319,6 +334,7 @@ def check_trade(current_price):
             if (trend == "هابط" and current_price <= trade["tp1"]) or \
                (trend == "صاعد" and current_price >= trade["tp1"]):
                 trade["tp1_hit"] = True
+                save_trade(trade)
                 send_to_all(f"""✅ <b>تحقق الهدف الأول {trade['tp1']}</b>
 💰 السعر: {current_price}
 ⏳ الهدف الثاني: {trade['tp2']}""")
@@ -329,6 +345,7 @@ def check_trade(current_price):
             if (trend == "هابط" and current_price <= trade["tp2"]) or \
                (trend == "صاعد" and current_price >= trade["tp2"]):
                 trade["tp2_hit"] = True
+                save_trade(trade)
                 send_to_all(f"""✅✅ <b>تحقق الهدف الثاني {trade['tp2']}</b>
 💰 السعر: {current_price}
 ⏳ الهدف الثالث: {trade['tp3']}""")
@@ -342,7 +359,6 @@ def check_trade(current_price):
 🔍 جاري رصد فرصة جديدة...""")
             reset_trade()
 
-
 # ======= انتظار الكسر =======
 def check_break(current_price):
     global trade
@@ -355,12 +371,13 @@ def check_break(current_price):
     if trend == "هابط" and current_price < entry:
         trade["phase"] = "broken"
         trade["break_price"] = current_price
+        save_trade(trade)
         logging.info(f"كسر للأسفل عند {current_price}")
     elif trend == "صاعد" and current_price > entry:
         trade["phase"] = "broken"
         trade["break_price"] = current_price
+        save_trade(trade)
         logging.info(f"كسر للأعلى عند {current_price}")
-
 
 # ======= استقبال المشتركين =======
 def handle_updates():
@@ -408,7 +425,6 @@ def handle_updates():
             logging.error(f"خطأ updates: {e}")
         time.sleep(2)
 
-
 # ======= التشغيل الرئيسي =======
 def run():
     global trade
@@ -419,6 +435,20 @@ def run():
 
     send_to_all("🤖 <b>بوت الذهب شغّال</b> — يراقب XAUUSD\nالفريم: H1 للاتجاه | M15 للمستويات")
 
+    # أخبر المشتركين بحالة الصفقة الحالية
+    if trade["phase"] == "active":
+        direction = "🔴 بيع" if trade["trend"] == "هابط" else "🟢 شراء"
+        tp1_status = "✅ تحقق" if trade["tp1_hit"] else f"⏳ {trade['tp1']}"
+        tp2_status = "✅ تحقق" if trade["tp2_hit"] else f"⏳ {trade['tp2']}"
+        send_to_all(f"""📊 <b>تحديث الصفقة الحالية</b>
+
+{direction} من {trade['entry']}
+TP1: {tp1_status}
+TP2: {tp2_status}
+⏳ ننتظر TP3: {trade['tp3']}
+
+💰 متابعة تلقائية...""")
+
     analysis_counter = 0
 
     while True:
@@ -428,55 +458,49 @@ def run():
                 time.sleep(60)
                 continue
 
-            # متابعة الصفقة الحالية
             if trade["phase"] == "waiting" and trade["trend"]:
                 check_break(current_price)
             elif trade["phase"] in ["broken", "retest", "active"]:
                 check_trade(current_price)
 
-            # تحليل جديد فقط لما ما في صفقة نشطة
             if trade["phase"] == "waiting":
                 analysis_counter += 1
                 if analysis_counter >= 15:
                     analysis_counter = 0
-
                     h1_prices  = get_prices("1h", 50)
                     m15_prices = get_prices("15min", 30)
-
                     if h1_prices and m15_prices:
                         result = analyze_with_claude(h1_prices, m15_prices, current_price)
-
                         if result:
                             new_pivot  = result["pivot_price"]
                             last_pivot = trade.get("last_pivot")
-
                             if new_pivot != last_pivot:
-                                trade["trend"]       = result["trend"]
-                                trade["entry"]       = result["entry"]
-                                trade["sl"]          = result["sl"]
-                                trade["tp1"]         = result["tp1"]
-                                trade["tp2"]         = result["tp2"]
-                                trade["tp3"]         = result["tp3"]
-                                trade["pivot"]       = new_pivot
-                                trade["last_pivot"]  = new_pivot
-                                trade["next_zone"]   = result.get("next_zone")
-                                trade["next_dir"]    = result.get("next_dir")
-                                trade["next_sl"]     = result.get("next_sl")
-                                trade["next_tp1"]    = result.get("next_tp1")
-                                trade["next_tp2"]    = result.get("next_tp2")
-                                trade["next_tp3"]    = result.get("next_tp3")
+                                trade["trend"]        = result["trend"]
+                                trade["entry"]        = result["entry"]
+                                trade["sl"]           = result["sl"]
+                                trade["tp1"]          = result["tp1"]
+                                trade["tp2"]          = result["tp2"]
+                                trade["tp3"]          = result["tp3"]
+                                trade["pivot"]        = new_pivot
+                                trade["last_pivot"]   = new_pivot
+                                trade["next_zone"]    = result.get("next_zone")
+                                trade["next_dir"]     = result.get("next_dir")
+                                trade["next_sl"]      = result.get("next_sl")
+                                trade["next_tp1"]     = result.get("next_tp1")
+                                trade["next_tp2"]     = result.get("next_tp2")
+                                trade["next_tp3"]     = result.get("next_tp3")
                                 trade["next_alerted"] = False
+                                save_trade(trade)
                                 send_new_trade(result, current_price)
                             else:
                                 logging.info(f"نفس الـ Pivot ({new_pivot}) — انتظار")
             else:
-                analysis_counter = 0  # أوقف العداد لما في صفقة
+                analysis_counter = 0
 
         except Exception as e:
             logging.error(f"خطأ عام: {e}")
 
         time.sleep(60)
-
 
 if __name__ == "__main__":
     run()
