@@ -313,7 +313,7 @@ def run():
 
     while True:
         try:
-            m5_prices = get_prices("5m", 10)
+            m5_prices = get_prices("1m", 10)
             if not m5_prices:
                 time.sleep(60)
                 continue
