@@ -7,9 +7,10 @@ import threading
 from datetime import datetime
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-TELEGRAM_TOKEN   = "8623822921:AAGRn6fNVa3PRkxirDnqnPFgeQAt42S_B5M"
-ADMIN_CHAT_ID    = "7278951055"
-SUBSCRIBERS_FILE = "/data/subscribers.json"
+TWELVE_API_KEY    = os.environ.get("TWELVE_API_KEY", "")
+TELEGRAM_TOKEN    = "8623822921:AAGRn6fNVa3PRkxirDnqnPFgeQAt42S_B5M"
+ADMIN_CHAT_ID     = "7278951055"
+SUBSCRIBERS_FILE  = "/data/subscribers.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
@@ -22,8 +23,7 @@ def load_subscribers():
         os.makedirs("/data", exist_ok=True)
         if os.path.exists(SUBSCRIBERS_FILE):
             with open(SUBSCRIBERS_FILE, "r") as f:
-                data = json.load(f)
-                subs = set(data)
+                subs = set(json.load(f))
                 subs.add(ADMIN_CHAT_ID)
                 return subs
     except:
@@ -63,27 +63,43 @@ def reset_trade():
     }
 
 
-# ======= الأسعار =======
-def get_prices(interval="60m", count=50):
+# ======= الأسعار من Twelve Data =======
+def get_prices(interval="1h", count=50):
     try:
-        ranges = {"60m": "5d", "15m": "1d", "5m": "1d"}
-        rng = ranges.get(interval, "1d")
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval={interval}&range={rng}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=15)
+        url = "https://api.twelvedata.com/time_series"
+        params = {
+            "symbol": "XAU/USD",
+            "interval": interval,
+            "outputsize": count,
+            "apikey": TWELVE_API_KEY
+        }
+        r = requests.get(url, params=params, timeout=15)
         data = r.json()
-        result_data = data["chart"]["result"]
-        if not result_data:
+        if data.get("status") == "error":
+            logging.error(f"Twelve Data error: {data.get('message')}")
             return None
-        closes = result_data[0]["indicators"]["quote"][0]["close"]
-        prices = [round(p, 2) for p in closes if p is not None]
-        if len(prices) < 5:
+        values = data.get("values", [])
+        if not values:
             return None
-        result = prices[-count:] if len(prices) >= count else prices
-        logging.info(f"[{interval}] {len(result)} سعر — آخرها: {result[-1]}")
-        return result
+        prices = [round(float(v["close"]), 2) for v in reversed(values)]
+        logging.info(f"[{interval}] {len(prices)} سعر — آخرها: {prices[-1]}")
+        return prices
     except Exception as e:
         logging.error(f"خطأ سحب [{interval}]: {e}")
+        return None
+
+
+def get_current_price():
+    try:
+        url = "https://api.twelvedata.com/price"
+        params = {"symbol": "XAU/USD", "apikey": TWELVE_API_KEY}
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        price = round(float(data["price"]), 2)
+        logging.info(f"السعر الحالي: {price}")
+        return price
+    except Exception as e:
+        logging.error(f"خطأ سحب السعر الحالي: {e}")
         return None
 
 
@@ -105,7 +121,7 @@ def analyze_with_claude(h1_prices, m15_prices, current_price):
 7. Entry=L1، SL=Pivot، TP1=L2، TP2=L3، TP3=L4
 8. هابط=بيع، صاعد=شراء
 
-مهم: اختر Pivot جديد ومختلف يعكس الوضع الحالي للسوق.
+مهم: اختر Pivot جديد يعكس الوضع الحالي للسوق.
 
 أجب فقط بـ JSON:
 {"trend":"هابط","pivot_type":"Peak","pivot_price":0,"core_code":0,"family":0,"step":0,"level1":0,"level2":0,"level3":0,"level4":0,"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0,"note":""}"""
@@ -273,7 +289,6 @@ def handle_updates():
                     if chat_id not in subscribers:
                         subscribers.add(chat_id)
                         save_subscribers(subscribers)
-                        logging.info(f"مشترك جديد: {chat_id} ({first_name})")
                         send_to_one(chat_id, f"""🥇 <b>أهلاً {first_name}!</b>
 
 تم تسجيلك في بوت تحليل الذهب XAUUSD 🎉
@@ -313,12 +328,10 @@ def run():
 
     while True:
         try:
-            m5_prices = get_prices("1m", 10)
-            if not m5_prices:
+            current_price = get_current_price()
+            if not current_price:
                 time.sleep(60)
                 continue
-
-            current_price = m5_prices[-1]
 
             if trade["active"]:
                 check_trade(current_price)
@@ -327,8 +340,8 @@ def run():
             if analysis_counter >= 15:
                 analysis_counter = 0
 
-                h1_prices = get_prices("60m", 50)
-                m15_prices = get_prices("15m", 30)
+                h1_prices = get_prices("1h", 50)
+                m15_prices = get_prices("15min", 30)
 
                 if h1_prices and m15_prices:
                     result = analyze_with_claude(h1_prices, m15_prices, current_price)
@@ -337,7 +350,6 @@ def run():
                         new_pivot = result["pivot_price"]
                         last_pivot = trade.get("last_pivot")
 
-                        # تغير الاتجاه
                         if trade["active"] and result["trend"] != trade["trend"]:
                             send_to_all(f"""🔄 <b>تغيّر الاتجاه</b>
 الاتجاه الجديد: {result['trend']}
@@ -346,7 +358,6 @@ def run():
 🔍 <b>تحليل جديد...</b>{DISCLAIMER}""")
                             reset_trade()
 
-                        # صفقة جديدة — فقط إذا الـ Pivot مختلف
                         if not trade["active"] and new_pivot != last_pivot:
                             trade["active"] = True
                             trade["trend"] = result["trend"]
@@ -358,7 +369,7 @@ def run():
                             trade["pivot"] = new_pivot
                             trade["last_pivot"] = new_pivot
                             send_new_trade(result, current_price)
-                        elif not trade["active"] and new_pivot == last_pivot:
+                        elif not trade["active"]:
                             logging.info(f"نفس الـ Pivot ({new_pivot}) — انتظار pivot جديد")
 
         except Exception as e:
