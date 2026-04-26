@@ -151,7 +151,7 @@ def get_current_price(symbol):
         params = {"symbol": symbol, "apikey": TWELVE_API_KEY}
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        price = round(float(data["price"]), 2)
+        price = round(float(str(data["price"])), 2)
         return price
     except Exception as e:
         logging.error(f"خطأ سحب السعر [{symbol}]: {e}")
