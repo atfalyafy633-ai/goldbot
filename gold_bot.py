@@ -457,6 +457,24 @@ def handle_updates():
                         save_subscribers(subscribers)
                         send_to_one(chat_id, "تم إلغاء اشتراكك. يمكنك العودة بـ /start")
 
+                elif text.startswith("/broadcast") and chat_id == ADMIN_CHAT_ID:
+                    broadcast_msg = text.replace("/broadcast", "").strip()
+                    if broadcast_msg:
+                        count = 0
+                        for cid in list(subscribers.keys()):
+                            try:
+                                requests.post(
+                                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                    json={"chat_id": cid, "text": broadcast_msg, "parse_mode": "HTML"},
+                                    timeout=15
+                                )
+                                count += 1
+                            except:
+                                pass
+                        send_to_one(ADMIN_CHAT_ID, f"✅ تم الإرسال لـ {count} مشترك")
+                    else:
+                        send_to_one(ADMIN_CHAT_ID, "اكتب الرسالة بعد الأمر\nمثال: /broadcast مرحباً بالجميع")
+
                 elif text == "/count" and chat_id == ADMIN_CHAT_ID:
                     counts = {key: sum(1 for s in subscribers.values() if key in s) for key in SYMBOLS}
                     msg_lines = [f"👥 إجمالي المشتركين: {len(subscribers)}"]
