@@ -91,9 +91,8 @@ def default_trade(last_pivot=None):
 
 trades = {}
 for key in SYMBOLS:
-    trades[key] = default_trade()
-    save_trade(key, trades[key])
-logging.info("بدأ من صفر — لا صفقات قديمة")
+    saved = load_trade(key)
+    trades[key] = saved if saved else default_trade()
 
 def reset_trade(symbol_key):
     last_pivot = trades[symbol_key].get("pivot")
