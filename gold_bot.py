@@ -547,7 +547,7 @@ def run_symbol(symbol_key):
                 if analysis_counter >= 15:
                     analysis_counter = 0
                     h1 = get_prices(sym["symbol"], "1h", 50)
-                    m3 = get_prices(sym["symbol"], "3min", 30)  # ← 3M بدل 15M
+                    m3 = get_prices(sym["symbol"], "1min", 30)  # ← 3M بدل 15M
                     if h1 and m3:
                         result = analyze_with_claude(symbol_key, h1, m3, current_price)
                         if result:
