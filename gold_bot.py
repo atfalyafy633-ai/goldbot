@@ -193,11 +193,12 @@ def send_to_one(chat_id, msg):
         logging.error(f"خطأ إرسال: {e}")
 
 def format_zone(price, step, trend):
-    """تحويل نقطة لمنطقة"""
+    """تحويل نقطة لمنطقة ضيقة حول نقطة الدخول"""
+    margin = 2 if step <= 100 else 20
     if trend == "هابط":
-        return f"{price} — {round(price + step, 2)}"
+        return f"{price} — {round(price + margin, 2)}"
     else:
-        return f"{round(price - step, 2)} — {price}"
+        return f"{round(price - margin, 2)} — {price}"
 
 def send_new_trade(symbol_key, p, current_price):
     sym = SYMBOLS[symbol_key]
