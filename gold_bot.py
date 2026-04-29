@@ -26,6 +26,30 @@ SYMBOLS = {
     },
 }
 
+# ======= حساب Core Code في Python =======
+def calc_core_code(pivot_price):
+    digits_str = str(pivot_price).replace(".", "").replace("-", "")
+    first4 = digits_str[:4]
+    total = sum(int(d) for d in first4)
+    while total >= 10:
+        total = sum(int(d) for d in str(total))
+    return total if total != 0 else 9
+
+def calc_family(core):
+    if core in [1, 4, 7]: return 12
+    if core in [2, 5, 8]: return 15
+    if core in [3, 6, 9]: return 18
+    return 12
+
+def calc_levels(pivot, step, trend, count=4):
+    levels = []
+    for i in range(1, count + 1):
+        if trend == "هابط":
+            levels.append(round(pivot - step * i, 2))
+        else:
+            levels.append(round(pivot + step * i, 2))
+    return levels
+
 # ======= المشتركين =======
 def load_subscribers():
     try:
@@ -69,10 +93,9 @@ def load_trade(symbol_key):
         if os.path.exists(path):
             with open(path, "r") as f:
                 data = json.load(f)
-                logging.info(f"تحميل صفقة {symbol_key}: {data.get('phase')} | {data.get('entry')}")
                 return data
-    except Exception as e:
-        logging.error(f"خطأ تحميل صفقة {symbol_key}: {e}")
+    except:
+        pass
     return None
 
 def default_trade(last_pivot=None):
@@ -83,11 +106,10 @@ def default_trade(last_pivot=None):
         "tp1_hit": False, "tp2_hit": False,
         "pivot": None, "last_pivot": last_pivot,
         "break_price": None,
+        "level1": None, "level2": None, "level3": None, "level4": None,
         "next_zone": None, "next_dir": None,
-        "next_sl": None, "next_tp1": None, "next_tp2": None, "next_tp3": None,
         "next_alerted": False,
         "secured": False,
-        "level1": None, "level2": None, "level3": None, "level4": None,
     }
 
 trades = {}
@@ -126,47 +148,53 @@ def get_current_price(symbol):
         params = {"symbol": symbol, "apikey": TWELVE_API_KEY}
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        price = round(float(str(data["price"])), 2)
-        return price
+        return round(float(str(data["price"])), 2)
     except Exception as e:
         logging.error(f"خطأ سحب السعر [{symbol}]: {e}")
         return None
 
-# ======= التحليل =======
-# التعديل 1: استخدام 3M بدل 15M للتنفيذ
-# التعديل 2: SL عند المستوى السابق مباشرة وليس عند الـ Pivot
+# ======= التحليل — Claude يختار Pivot فقط =======
+def get_pivot_from_claude(symbol_key, h1_prices, m1_prices, current_price):
+    system = """أنت نظام تداول متخصص في استراتيجية التوازن المفقود.
 
-def analyze_with_claude(symbol_key, h1_prices, m3_prices, current_price):
-    step_multiplier = SYMBOLS[symbol_key]["step_multiplier"]
-    system = f"""أنت نظام تداول رقمي تطبق فقط منهج استراتيجية التوازن المفقود.
+مهمتك الوحيدة:
+1. حدد الاتجاه (صاعد/هابط) من بيانات H1
+2. اختر الـ Pivot الصحيح:
+   - هابط: آخر قمة واضحة نتج بعدها هبوط حقيقي
+   - صاعد: آخر قاع واضح نتجت بعده موجة صاعدة حقيقية
+3. تحقق من بيانات 1M:
+   - هل يوجد كسر حقيقي لمستوى مع إغلاق؟
+   - هل يوجد إعادة اختبار نظيفة؟
+   - هل يوجد رفض واضح؟
+   - هل يوجد تأكيد استمرار؟
 
-الخطوات:
-1. من H1: حدد الاتجاه العام (صاعد/هابط)
-2. من H1: اختر الـ Pivot — آخر قمة في الهابط، آخر قاع في الصاعد
-3. Core Code: أول 4 أرقام من Pivot بدون فاصلة، اجمعها حتى رقم 1-9
-4. العائلة: 1او4او7=12 | 2او5او8=15 | 3او6او9=18
-5. Step = قيمة العائلة × {step_multiplier}
-6. ابنِ 4 مستويات صعوداً أو هبوطاً
-7. Entry = L1 (أول مستوى)
-8. *** SL = المستوى السابق مباشرة قبل نقطة الدخول — وليس الـ Pivot ***
-   - مثال هابط: الدخول عند L1، SL عند Pivot (لأنه المستوى السابق)
-   - مثال صاعد: الدخول عند L1، SL عند Pivot (لأنه المستوى السابق)
-   - لو الدخول عند L2: SL عند L1
-9. TP1=L2، TP2=L3، TP3=L4
-10. استخدم بيانات 3M لتحديد هل يوجد كسر وإعادة اختبار حالياً
-11. المنطقة القادمة = L4 ± Step
-12. هابط=بيع، صاعد=شراء
+شروط NO TRADE:
+- الاتجاه غير واضح
+- الـ Pivot غير واضح
+- السعر تجاوز جميع المستويات
+- لا يوجد كسر حقيقي
+- السوق متذبذب
+- الإشارة ضعيفة
 
 أجب فقط بـ JSON:
-{{"trend":"هابط","pivot_type":"Peak","pivot_price":0,"core_code":0,"family":0,"step":0,"level1":0,"level2":0,"level3":0,"level4":0,"entry":0,"sl":0,"tp1":0,"tp2":0,"tp3":0,"next_zone":0,"next_dir":"شراء","next_sl":0,"next_tp1":0,"next_tp2":0,"next_tp3":0,"note":""}}"""
+{"trend":"هابط","pivot_price":0,"decision":"TRADE أو NO TRADE","signal_strength":"Strong أو Weak","note":"سبب واحد فقط"}"""
 
-    user_msg = f"""[H1 - للتحليل والـ Pivot]:\n{chr(10).join([str(p) for p in h1_prices])}\n\n[3M - للكسر وإعادة الاختبار]:\n{chr(10).join([str(p) for p in m3_prices])}\n\nالسعر الحالي: {current_price}\n\nJSON فقط."""
+    user_msg = f"""[H1]:\n{chr(10).join([str(p) for p in h1_prices[-40:]])}\n\n[1M]:\n{chr(10).join([str(p) for p in m1_prices[-30:]])}\n\nالسعر الحالي: {current_price}\n\nJSON فقط."""
 
     try:
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 800, "system": system, "messages": [{"role": "user", "content": user_msg}]},
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 300,
+                "system": system,
+                "messages": [{"role": "user", "content": user_msg}]
+            },
             timeout=45
         )
         if r.status_code != 200:
@@ -174,7 +202,54 @@ def analyze_with_claude(symbol_key, h1_prices, m3_prices, current_price):
             return None
         raw = r.json()["content"][0]["text"]
         clean = raw.replace("```json","").replace("```","").strip()
-        return json.loads(clean)
+        result = json.loads(clean)
+
+        # حساب Core Code والمستويات في Python — مو Claude
+        pivot = result.get("pivot_price", 0)
+        trend = result.get("trend", "")
+        decision = result.get("decision", "NO TRADE")
+        signal = result.get("signal_strength", "Weak")
+
+        if not pivot or decision == "NO TRADE" or signal == "Weak":
+            return None
+
+        core = calc_core_code(pivot)
+        family = calc_family(core)
+        step = family * SYMBOLS[symbol_key]["step_multiplier"]
+        levels = calc_levels(pivot, step, trend)
+
+        entry = levels[0]
+        sl = pivot  # المستوى السابق للدخول = الـ Pivot
+        tp1 = levels[1]
+        tp2 = levels[2]
+        tp3 = levels[3]
+        next_zone = round(levels[3] + (step if trend == "صاعد" else -step), 2)
+        next_dir = "شراء" if trend == "هابط" else "بيع"
+
+        logging.info(f"Pivot={pivot} | Core={core} | Family={family} | Step={step} | Levels={levels}")
+
+        return {
+            "trend": trend,
+            "pivot_price": pivot,
+            "core_code": core,
+            "family": family,
+            "step": step,
+            "level1": levels[0],
+            "level2": levels[1],
+            "level3": levels[2],
+            "level4": levels[3],
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "next_zone": next_zone,
+            "next_dir": next_dir,
+            "signal_strength": signal,
+            "decision": decision,
+            "note": result.get("note", "")
+        }
+
     except Exception as e:
         logging.error(f"خطأ تحليل: {e}")
         return None
@@ -219,85 +294,70 @@ def send_new_trade(symbol_key, p, current_price):
     next_dir = p.get("next_dir", "")
     next_emoji = "🟢" if next_dir == "شراء" else "🔴"
 
-    if next_zone and next_zone != 0:
+    if next_zone:
         next_zone_str = format_zone(next_zone, step, "صاعد" if next_dir == "شراء" else "هابط")
-        next_line = f"\n\n👀 <b>المنطقة القادمة:</b> {next_zone_str}\n{next_emoji} نفكر في {next_dir} منها عند وصول السعر"
+        next_line = f"\n\n👀 <b>المنطقة القادمة:</b> {next_zone_str}\n{next_emoji} نفكر في {next_dir} منها"
     else:
-        next_line = "\n\n👀 لا توجد منطقة قادمة حالياً — نراقب السوق"
+        next_line = ""
 
     msg = f"""{sym['emoji']} <b>{sym['name']} {sym['display']}</b>
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
 {trend_emoji} <b>الاتجاه:</b> {p['trend']}
-📌 <b>Pivot ({p.get('pivot_type','')}):</b> {p.get('pivot_price',0)}
-🔢 Core: {p.get('core_code',0)} | Family: {p.get('family',0)} | Step: {p.get('step',0)}
+📌 <b>Pivot ({p.get('pivot_type','Peak' if p['trend']=='هابط' else 'Trough')}):</b> {p.get('pivot_price')}
+🔢 Core: {p.get('core_code')} | Family: {p.get('family')} | Step: {p.get('step')}
 
 📊 <b>المستويات:</b>
-  L1: {p.get('level1',0)}
-  L2: {p.get('level2',0)}
-  L3: {p.get('level3',0)}
-  L4: {p.get('level4',0)}
+  L1: {p.get('level1')}
+  L2: {p.get('level2')}
+  L3: {p.get('level3')}
+  L4: {p.get('level4')}
 
-{direction} — ضع أمر معلق بين: <b>{entry_zone}</b>
+{direction} — أمر معلق: <b>{entry_zone}</b>
 🛑 SL: <b>{p['sl']}</b>
 ✅ TP1: <b>{p['tp1']}</b>
 ✅ TP2: <b>{p['tp2']}</b>
 ✅ TP3: <b>{p['tp3']}</b>
 
-⏳ <b>الحالة:</b> انتظار الكسر + إعادة الاختبار على 3M
-💡 {p.get('note','')}
-💰 <b>السعر الحالي:</b> {current_price}{next_line}{DISCLAIMER}"""
+⏳ <b>الحالة:</b> انتظار الكسر + إعادة الاختبار على 1M
+💪 قوة الإشارة: {p.get('signal_strength','—')}
+💡 {p.get('note','')}{next_line}{DISCLAIMER}"""
     send_to_subscribers(symbol_key, msg)
 
 def send_activated(symbol_key, current_price):
     sym = SYMBOLS[symbol_key]
     t = trades[symbol_key]
     direction = "🔴 بيع" if t["trend"] == "هابط" else "🟢 شراء"
-    step = t.get("step", 12)
-    next_zone = t.get("next_zone")
-    next_dir = t.get("next_dir", "")
-    next_emoji = "🟢" if next_dir == "شراء" else "🔴"
 
-    if next_zone and next_zone != 0:
-        next_zone_str = format_zone(next_zone, step, "صاعد" if next_dir == "شراء" else "هابط")
-        next_line = f"\n\n👀 <b>المنطقة القادمة:</b> {next_zone_str}\n{next_emoji} نفكر في {next_dir} منها عند وصول السعر"
-    else:
-        next_line = "\n\n👀 لا توجد منطقة قادمة حالياً — نراقب السوق"
-
-    msg = f"""🚨 <b>تفعّلت صفقة {direction} عند {t['entry']}</b>
+    msg = f"""🚨 <b>تفعّلت صفقة {direction}</b>
 {sym['emoji']} {sym['display']}
 💰 السعر الحالي: {current_price}
 
+🎯 الدخول: <b>{t['entry']}</b>
 🛑 SL: <b>{t['sl']}</b>
 ✅ TP1: <b>{t['tp1']}</b>
 ✅ TP2: <b>{t['tp2']}</b>
-✅ TP3: <b>{t['tp3']}</b>{next_line}{DISCLAIMER}"""
+✅ TP3: <b>{t['tp3']}</b>{DISCLAIMER}"""
     send_to_subscribers(symbol_key, msg)
 
 # ======= متابعة الصفقة =======
-RETEST_TOLERANCE = {"gold": 1, "btc": 10}
+RETEST_TOLERANCE = {"gold": 1.5, "btc": 15}
 
 def check_trade(symbol_key, current_price):
     t = trades[symbol_key]
-    tolerance = RETEST_TOLERANCE.get(symbol_key, 1)
-
+    tolerance = RETEST_TOLERANCE.get(symbol_key, 1.5)
     if t["phase"] == "waiting":
         return
-
     trend = t["trend"]
     entry = t["entry"]
     sym = SYMBOLS[symbol_key]
 
     if t["phase"] == "broken":
         if trend == "هابط":
-            if t["break_price"] is None or current_price > t["break_price"]:
-                t["break_price"] = current_price
             if current_price >= entry - tolerance:
                 t["phase"] = "retest"
                 save_trade(symbol_key, t)
         else:
-            if t["break_price"] is None or current_price < t["break_price"]:
-                t["break_price"] = current_price
             if current_price <= entry + tolerance:
                 t["phase"] = "retest"
                 save_trade(symbol_key, t)
@@ -310,9 +370,8 @@ def check_trade(symbol_key, current_price):
                 save_trade(symbol_key, t)
                 send_activated(symbol_key, current_price)
             elif current_price >= t["sl"]:
-                send_to_subscribers(symbol_key, f"""❌ <b>فشل الـ Retest — الصفقة ملغاة</b>
-{sym['emoji']} {sym['display']}
-💰 السعر: {current_price}
+                send_to_subscribers(symbol_key, f"""❌ <b>فشل الـ Retest — ملغاة</b>
+{sym['emoji']} {sym['display']} | السعر: {current_price}
 🔍 جاري رصد فرصة جديدة...""")
                 reset_trade(symbol_key)
         else:
@@ -321,73 +380,57 @@ def check_trade(symbol_key, current_price):
                 save_trade(symbol_key, t)
                 send_activated(symbol_key, current_price)
             elif current_price <= t["sl"]:
-                send_to_subscribers(symbol_key, f"""❌ <b>فشل الـ Retest — الصفقة ملغاة</b>
-{sym['emoji']} {sym['display']}
-💰 السعر: {current_price}
+                send_to_subscribers(symbol_key, f"""❌ <b>فشل الـ Retest — ملغاة</b>
+{sym['emoji']} {sym['display']} | السعر: {current_price}
 🔍 جاري رصد فرصة جديدة...""")
                 reset_trade(symbol_key)
         return
 
     if t["phase"] == "active":
-        next_zone = t.get("next_zone")
-        if next_zone and not t["next_alerted"]:
-            if abs(current_price - next_zone) <= tolerance * 5:
-                t["next_alerted"] = True
-                save_trade(symbol_key, t)
-                next_dir = t.get("next_dir", "")
-                step = t.get("step", 12)
-                next_zone_str = format_zone(next_zone, step, "صاعد" if next_dir == "شراء" else "هابط")
-                send_to_subscribers(symbol_key, f"""👀 <b>السعر يقترب من منطقة {next_dir}</b>
-{sym['emoji']} {sym['display']}
-📍 المنطقة: {next_zone_str}
-💰 السعر الحالي: {current_price}
-⏳ انتظار الكسر + إعادة الاختبار على 3M""")
-
+        # SL
         if (trend == "هابط" and current_price >= t["sl"]) or \
            (trend == "صاعد" and current_price <= t["sl"]):
             if t.get("secured"):
                 send_to_subscribers(symbol_key, f"""🛑 <b>خرجنا بربح — الصفقة كانت مؤمنة</b>
-{sym['emoji']} {sym['display']}
-💰 السعر: {current_price}
+{sym['emoji']} {sym['display']} | السعر: {current_price}
 🔍 جاري رصد فرصة جديدة...""")
             else:
                 send_to_subscribers(symbol_key, f"""🛑 <b>ضُرب وقف الخسارة</b>
-{sym['emoji']} {sym['display']}
-💰 السعر: {current_price}
+{sym['emoji']} {sym['display']} | السعر: {current_price}
 🔍 جاري رصد فرصة جديدة...""")
             reset_trade(symbol_key)
             return
 
+        # TP1
         if not t["tp1_hit"]:
             if (trend == "هابط" and current_price <= t["tp1"]) or \
                (trend == "صاعد" and current_price >= t["tp1"]):
                 t["tp1_hit"] = True
                 t["secured"] = True
-                t["sl"] = t["entry"]  # نقل SL لنقطة الدخول بعد TP1
+                t["sl"] = t["entry"]
                 save_trade(symbol_key, t)
-                send_to_subscribers(symbol_key, f"""✅ <b>تحقق الهدف الأول {t['tp1']}</b>
-{sym['emoji']} {sym['display']}
-💰 السعر: {current_price}
-🔒 تم نقل SL لنقطة الدخول {t['entry']} — الصفقة مؤمنة
+                send_to_subscribers(symbol_key, f"""✅ <b>TP1 تحقق {t['tp1']}</b>
+{sym['emoji']} {sym['display']} | السعر: {current_price}
+🔒 SL نُقل لنقطة الدخول {t['entry']} — الصفقة مؤمنة
 ⏳ الهدف الثاني: {t['tp2']}""")
             return
 
+        # TP2
         if not t["tp2_hit"]:
             if (trend == "هابط" and current_price <= t["tp2"]) or \
                (trend == "صاعد" and current_price >= t["tp2"]):
                 t["tp2_hit"] = True
                 save_trade(symbol_key, t)
-                send_to_subscribers(symbol_key, f"""✅✅ <b>تحقق الهدف الثاني {t['tp2']}</b>
-{sym['emoji']} {sym['display']}
-💰 السعر: {current_price}
+                send_to_subscribers(symbol_key, f"""✅✅ <b>TP2 تحقق {t['tp2']}</b>
+{sym['emoji']} {sym['display']} | السعر: {current_price}
 ⏳ الهدف الثالث: {t['tp3']}""")
             return
 
+        # TP3
         if (trend == "هابط" and current_price <= t["tp3"]) or \
            (trend == "صاعد" and current_price >= t["tp3"]):
-            send_to_subscribers(symbol_key, f"""🎯 <b>تحقق الهدف الثالث — الصفقة اكتملت</b>
-{sym['emoji']} {sym['display']}
-💰 السعر: {current_price}
+            send_to_subscribers(symbol_key, f"""🎯 <b>TP3 تحقق — الصفقة اكتملت</b>
+{sym['emoji']} {sym['display']} | السعر: {current_price}
 🔍 جاري رصد فرصة جديدة...""")
             reset_trade(symbol_key)
 
@@ -402,10 +445,8 @@ def check_break(symbol_key, current_price):
 
     if trend == "هابط" and current_price < entry:
         if (entry - current_price) > max_skip:
-            logging.info(f"فات المستوى {symbol_key} — إلغاء")
-            send_to_subscribers(symbol_key, f"""⚠️ <b>فات المستوى — جاري البحث عن فرصة جديدة</b>
-{sym["emoji"]} {sym["display"]}
-💰 السعر الحالي: {current_price}""")
+            send_to_subscribers(symbol_key, f"""⚠️ <b>فات المستوى — فرصة جديدة</b>
+{sym['emoji']} {sym['display']} | السعر: {current_price}""")
             reset_trade(symbol_key)
             return
         t["phase"] = "broken"
@@ -414,10 +455,8 @@ def check_break(symbol_key, current_price):
 
     elif trend == "صاعد" and current_price > entry:
         if (current_price - entry) > max_skip:
-            logging.info(f"فات المستوى {symbol_key} — إلغاء")
-            send_to_subscribers(symbol_key, f"""⚠️ <b>فات المستوى — جاري البحث عن فرصة جديدة</b>
-{sym["emoji"]} {sym["display"]}
-💰 السعر الحالي: {current_price}""")
+            send_to_subscribers(symbol_key, f"""⚠️ <b>فات المستوى — فرصة جديدة</b>
+{sym['emoji']} {sym['display']} | السعر: {current_price}""")
             reset_trade(symbol_key)
             return
         t["phase"] = "broken"
@@ -445,18 +484,13 @@ def handle_updates():
                 if text == "/start":
                     if chat_id not in subscribers:
                         send_to_one(chat_id, f"""🥇 <b>أهلاً {first_name}!</b>
-
-مرحباً بك في بوت التحليل 🎉
-
-اختر الرموز التي تريد متابعتها:
-
-1️⃣ /gold — الذهب XAUUSD
-2️⃣ /btc — البيتكوين BTCUSD
+اختر ما تريد متابعته:
+1️⃣ /gold — الذهب
+2️⃣ /btc — البيتكوين
 3️⃣ /all — الكل
-
-⚠️ التحليل اجتهادي قابل للصواب والخطأ — إدارة رأس المال أولاً""")
+⚠️ التحليل اجتهادي — إدارة رأس المال أولاً""")
                     else:
-                        send_to_one(chat_id, f"✅ أنت مشترك بالفعل\nرموزك: {', '.join(subscribers[chat_id])}")
+                        send_to_one(chat_id, f"✅ مشترك بالفعل: {', '.join(subscribers[chat_id])}")
 
                 elif text == "/gold":
                     subs = subscribers.get(chat_id, [])
@@ -464,10 +498,10 @@ def handle_updates():
                         subs.append("gold")
                         subscribers[chat_id] = subs
                         save_subscribers(subscribers)
-                        send_to_one(chat_id, "✅ تم تسجيلك في الذهب XAUUSD 🥇")
-                        send_to_one(ADMIN_CHAT_ID, f"👤 مشترك جديد: {first_name} — الذهب | إجمالي: {len(subscribers)}")
+                        send_to_one(chat_id, "✅ تم تسجيلك في الذهب 🥇")
+                        send_to_one(ADMIN_CHAT_ID, f"👤 {first_name} — ذهب | {len(subscribers)} مشترك")
                     else:
-                        send_to_one(chat_id, "✅ أنت مشترك بالفعل في الذهب")
+                        send_to_one(chat_id, "✅ مشترك بالفعل في الذهب")
 
                 elif text == "/btc":
                     subs = subscribers.get(chat_id, [])
@@ -475,58 +509,51 @@ def handle_updates():
                         subs.append("btc")
                         subscribers[chat_id] = subs
                         save_subscribers(subscribers)
-                        send_to_one(chat_id, "✅ تم تسجيلك في البيتكوين BTCUSD 🪙")
-                        send_to_one(ADMIN_CHAT_ID, f"👤 مشترك جديد: {first_name} — البيتكوين | إجمالي: {len(subscribers)}")
+                        send_to_one(chat_id, "✅ تم تسجيلك في البيتكوين 🪙")
+                        send_to_one(ADMIN_CHAT_ID, f"👤 {first_name} — بيتكوين | {len(subscribers)} مشترك")
                     else:
-                        send_to_one(chat_id, "✅ أنت مشترك بالفعل في البيتكوين")
+                        send_to_one(chat_id, "✅ مشترك بالفعل في البيتكوين")
 
                 elif text == "/all":
                     subscribers[chat_id] = list(SYMBOLS.keys())
                     save_subscribers(subscribers)
-                    send_to_one(chat_id, "✅ تم تسجيلك في جميع الرموز 🥇🪙")
-                    send_to_one(ADMIN_CHAT_ID, f"👤 مشترك جديد: {first_name} — الكل | إجمالي: {len(subscribers)}")
+                    send_to_one(chat_id, "✅ تم تسجيلك في الكل 🥇🪙")
+                    send_to_one(ADMIN_CHAT_ID, f"👤 {first_name} — الكل | {len(subscribers)} مشترك")
 
                 elif text == "/stop":
                     if chat_id in subscribers and chat_id != ADMIN_CHAT_ID:
                         del subscribers[chat_id]
                         save_subscribers(subscribers)
-                        send_to_one(chat_id, "تم إلغاء اشتراكك. يمكنك العودة بـ /start")
+                        send_to_one(chat_id, "تم إلغاء اشتراكك. عد بـ /start")
 
                 elif text.startswith("/broadcast") and chat_id == ADMIN_CHAT_ID:
-                    broadcast_msg = text.replace("/broadcast", "").strip()
-                    if broadcast_msg:
+                    bm = text.replace("/broadcast", "").strip()
+                    if bm:
                         count = 0
                         for cid in list(subscribers.keys()):
                             try:
-                                requests.post(
-                                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                                    json={"chat_id": cid, "text": broadcast_msg, "parse_mode": "HTML"},
-                                    timeout=15
-                                )
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                    json={"chat_id": cid, "text": bm, "parse_mode": "HTML"}, timeout=15)
                                 count += 1
-                            except:
-                                pass
-                        send_to_one(ADMIN_CHAT_ID, f"✅ تم الإرسال لـ {count} مشترك")
-                    else:
-                        send_to_one(ADMIN_CHAT_ID, "اكتب الرسالة بعد الأمر\nمثال: /broadcast مرحباً بالجميع")
+                            except: pass
+                        send_to_one(ADMIN_CHAT_ID, f"✅ أُرسل لـ {count} مشترك")
 
                 elif text == "/count" and chat_id == ADMIN_CHAT_ID:
-                    counts = {key: sum(1 for s in subscribers.values() if key in s) for key in SYMBOLS}
-                    msg_lines = [f"👥 إجمالي المشتركين: {len(subscribers)}"]
-                    for key, sym in SYMBOLS.items():
-                        msg_lines.append(f"{sym['emoji']} {sym['name']}: {counts[key]}")
-                    send_to_one(ADMIN_CHAT_ID, "\n".join(msg_lines))
+                    counts = {k: sum(1 for s in subscribers.values() if k in s) for k in SYMBOLS}
+                    lines = [f"👥 إجمالي: {len(subscribers)}"]
+                    for k, sym in SYMBOLS.items():
+                        lines.append(f"{sym['emoji']} {sym['name']}: {counts[k]}")
+                    send_to_one(ADMIN_CHAT_ID, "\n".join(lines))
 
         except Exception as e:
             logging.error(f"خطأ updates: {e}")
         time.sleep(2)
 
 # ======= التشغيل =======
-# التعديل: سحب 3M بدل 15M للتنفيذ
 def run_symbol(symbol_key):
     sym = SYMBOLS[symbol_key]
     analysis_counter = 0
-    logging.info(f"بدأ تحليل {symbol_key}")
+    logging.info(f"بدأ {symbol_key}")
 
     while True:
         try:
@@ -547,32 +574,28 @@ def run_symbol(symbol_key):
                 if analysis_counter >= 15:
                     analysis_counter = 0
                     h1 = get_prices(sym["symbol"], "1h", 50)
-                    m3 = get_prices(sym["symbol"], "1min", 30)  # ← 3M بدل 15M
-                    if h1 and m3:
-                        result = analyze_with_claude(symbol_key, h1, m3, current_price)
+                    m1 = get_prices(sym["symbol"], "1min", 30)
+                    if h1 and m1:
+                        result = get_pivot_from_claude(symbol_key, h1, m1, current_price)
                         if result:
                             new_pivot = result["pivot_price"]
                             if new_pivot != t.get("last_pivot"):
                                 t.update({
                                     "trend": result["trend"],
                                     "entry": result["entry"],
-                                    "step": result.get("step", 12),
-                                    "sl": result["sl"],  # ← SL من Claude = المستوى السابق
+                                    "step": result["step"],
+                                    "sl": result["sl"],
                                     "tp1": result["tp1"],
                                     "tp2": result["tp2"],
                                     "tp3": result["tp3"],
                                     "pivot": new_pivot,
                                     "last_pivot": new_pivot,
-                                    "level1": result.get("level1"),
-                                    "level2": result.get("level2"),
-                                    "level3": result.get("level3"),
-                                    "level4": result.get("level4"),
+                                    "level1": result["level1"],
+                                    "level2": result["level2"],
+                                    "level3": result["level3"],
+                                    "level4": result["level4"],
                                     "next_zone": result.get("next_zone"),
                                     "next_dir": result.get("next_dir"),
-                                    "next_sl": result.get("next_sl"),
-                                    "next_tp1": result.get("next_tp1"),
-                                    "next_tp2": result.get("next_tp2"),
-                                    "next_tp3": result.get("next_tp3"),
                                     "next_alerted": False,
                                     "secured": False,
                                 })
@@ -588,17 +611,13 @@ def run_symbol(symbol_key):
 
 def run():
     logging.info("البوت بدأ")
-
     t = threading.Thread(target=handle_updates, daemon=True)
     t.start()
-
-    send_to_one(ADMIN_CHAT_ID, "🤖 <b>البوت شغّال</b> — الذهب 🥇 والبيتكوين 🪙\nالفريمات: H1 للتحليل | 3M للتنفيذ")
-
+    send_to_one(ADMIN_CHAT_ID, "🤖 <b>البوت شغّال</b> — الذهب 🥇 والبيتكوين 🪙\nH1 تحليل | 1M تنفيذ صارم")
     for key in SYMBOLS:
         th = threading.Thread(target=run_symbol, args=(key,), daemon=True)
         th.start()
         time.sleep(5)
-
     while True:
         time.sleep(60)
 
